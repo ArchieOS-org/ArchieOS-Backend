@@ -29,8 +29,8 @@ def get_signing_secret() -> str:
         if test_secret:
             return test_secret
     
-    # Otherwise use production secret
-    secret = os.environ.get("SLACK_SIGNING_SECRET", "")
+    # Otherwise use production secret (strip to remove any trailing newlines from env var)
+    secret = os.environ.get("SLACK_SIGNING_SECRET", "").strip()
     if not secret:
         raise SlackVerificationError("SLACK_SIGNING_SECRET not set")
     return secret
