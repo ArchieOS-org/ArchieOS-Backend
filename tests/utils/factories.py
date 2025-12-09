@@ -54,3 +54,4 @@ def create_agent_task_data(realtor_id: Optional[str] = None) -> dict:
         "status": "PENDING",
     }
 
+

@@ -36,3 +36,4 @@ class Activity(BaseModel):
     inputs: dict[str, Any] = Field(default_factory=dict, description="Task inputs/metadata")
     outputs: dict[str, Any] = Field(default_factory=dict, description="Task outputs/results")
 
+

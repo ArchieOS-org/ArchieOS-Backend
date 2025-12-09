@@ -2,7 +2,7 @@
 
 import os
 import json
-import logging
+import time
 import re
 from typing import Optional
 from datetime import datetime
@@ -20,47 +20,56 @@ from langchain_openai import ChatOpenAI
 from src.models.classification import ClassificationV1, MessageType
 from src.services.supabase_client import enqueue_intake_message
 from src.utils.errors import ClassificationError
+from src.utils.logging import (
+    get_structured_logger,
+    log_timing,
+    sanitize_message_text,
+    mask_user_id,
+    get_correlation_id,
+)
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
-def should_skip_prefilter(text: str) -> bool:
+def should_skip_prefilter(text: str) -> tuple[bool, Optional[str]]:
     """
     Pre-filter messages to skip obvious casual chat/noise before LLM classification.
     
     Reduces unnecessary API calls by ~70-80% based on CloudWatch data showing 90% IGNORE rate.
+    
+    Returns tuple of (should_skip, reason)
     """
     if not text or not isinstance(text, str):
-        return False
+        return False, None
     
     normalized = text.strip().lower()
     
     # Skip very short messages (< 10 chars, likely acknowledgments)
     if len(normalized) < 10:
-        return True
+        return True, "message_too_short"
     
     # Skip emoji-only or mostly emoji messages
     emoji_pattern = re.compile(r'[\U0001F300-\U0001F9FF\u2600-\u26FF\u2700-\u27BF]', re.UNICODE)
     text_without_emoji = emoji_pattern.sub('', text).strip()
     if len(text_without_emoji) < 5:
-        return True
+        return True, "emoji_only"
     
     # Skip common greetings/acknowledgments
     casual_patterns = [
-        r'^(hi|hey|hello|thanks|thank you|thx|ty|ok|okay|sure|sounds good|perfect|great|awesome|nice|cool|lol|haha|yes|no|yep|nope|👍|👌)[\s!.]*$',
-        r'^(good morning|good afternoon|good evening|gm|gn)[\s!.]*$',
-        r'^(congrats|congratulations|well done|good job)[\s!.]*$',
+        (r'^(hi|hey|hello|thanks|thank you|thx|ty|ok|okay|sure|sounds good|perfect|great|awesome|nice|cool|lol|haha|yes|no|yep|nope|👍|👌)[\s!.]*$', "casual_greeting"),
+        (r'^(good morning|good afternoon|good evening|gm|gn)[\s!.]*$', "greeting"),
+        (r'^(congrats|congratulations|well done|good job)[\s!.]*$', "acknowledgment"),
     ]
     
-    for pattern in casual_patterns:
+    for pattern, reason in casual_patterns:
         if re.match(pattern, normalized, re.IGNORECASE):
-            return True
+            return True, reason
     
     # Skip pure emoji/reaction messages
     if re.match(r'^[\s\U0001F300-\U0001F9FF\u2600-\u26FF\u2700-\u27BF!.?]+$', text, re.UNICODE):
-        return True
+        return True, "emoji_reaction"
     
-    return False
+    return False, None
 
 
 def redact_pii(text: str) -> str:
@@ -360,6 +369,12 @@ def get_llm_model():
     provider = os.environ.get("LLM_PROVIDER", "anthropic").lower()
     model_name = os.environ.get("LLM_MODEL", "claude-sonnet-4-20250514")
     
+    logger.debug(
+        "Getting LLM model",
+        llm_provider=provider,
+        llm_model=model_name
+    )
+    
     if provider == "anthropic":
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
@@ -387,22 +402,46 @@ async def classify_and_enqueue_slack_message(
     
     Returns dict with 'ok' or 'skipped' key.
     """
+    correlation_id = get_correlation_id()
+    
+    logger.info(
+        "Classification started",
+        correlation_id=correlation_id,
+        channel_id=channel_id,
+        slack_user_id=mask_user_id(slack_user_id),
+        message_ts=ts,
+        message_preview=sanitize_message_text(text, max_length=100),
+        message_length=len(text) if text else 0,
+        links_count=len(links) if links else 0,
+        has_attachments=bool(attachments)
+    )
+    
     # Check feature flag
     use_classifier = os.environ.get("USE_LLM_CLASSIFIER", "true").lower() == "true"
     if not use_classifier:
+        logger.debug(
+            "Classifier disabled via feature flag",
+            correlation_id=correlation_id,
+            channel_id=channel_id
+        )
         return {"skipped": True}
     
     # Pre-filter casual chat
-    if should_skip_prefilter(text):
-        logger.debug("Message skipped by pre-filter", extra={"text_preview": text[:50]})
+    should_skip, skip_reason = should_skip_prefilter(text)
+    if should_skip:
+        logger.info(
+            "Message skipped by pre-filter",
+            correlation_id=correlation_id,
+            channel_id=channel_id,
+            skip_reason=skip_reason,
+            message_preview=sanitize_message_text(text, max_length=50)
+        )
         return {"skipped": True}
     
     try:
         # Build prompt
-        prompt_data = build_classification_prompt(text, slack_user_id, channel_id, ts, links, attachments)
-        
-        # Use LLM with structured output
-        model = get_llm_model()
+        with log_timing("build_classification_prompt", logger=logger, correlation_id=correlation_id):
+            prompt_data = build_classification_prompt(text, slack_user_id, channel_id, ts, links, attachments)
         
         # Build full prompt
         full_prompt = f"""{prompt_data['system']}
@@ -410,6 +449,29 @@ async def classify_and_enqueue_slack_message(
 {prompt_data['developer']}
 
 {prompt_data['user']}"""
+        
+        prompt_size = len(full_prompt)
+        logger.debug(
+            "Classification prompt built",
+            correlation_id=correlation_id,
+            prompt_size_chars=prompt_size,
+            prompt_size_kb=round(prompt_size / 1024, 2)
+        )
+        
+        # Use LLM with structured output
+        model = get_llm_model()
+        provider = os.environ.get("LLM_PROVIDER", "anthropic").lower()
+        model_name = os.environ.get("LLM_MODEL", "claude-sonnet-4-20250514")
+        
+        logger.info(
+            "LLM classification request started",
+            correlation_id=correlation_id,
+            llm_provider=provider,
+            llm_model=model_name,
+            prompt_size_chars=prompt_size
+        )
+        
+        llm_start_time = time.time()
         
         # Use with_structured_output for Pydantic models
         try:
@@ -434,14 +496,43 @@ async def classify_and_enqueue_slack_message(
             except (json.JSONDecodeError, ValueError) as e:
                 raise ClassificationError(f"Failed to parse LLM response: {e}")
         
+        llm_latency_ms = (time.time() - llm_start_time) * 1000
+        
+        logger.info(
+            "LLM classification response received",
+            correlation_id=correlation_id,
+            llm_provider=provider,
+            llm_model=model_name,
+            llm_latency_ms=round(llm_latency_ms, 2),
+            message_type=classification.message_type.value if classification.message_type else None,
+            confidence=classification.confidence,
+            group_key=classification.group_key,
+            task_key=classification.task_key,
+            has_listing_address=bool(classification.listing and classification.listing.get("address")),
+            has_assignee_hint=bool(classification.assignee_hint),
+            has_due_date=bool(classification.due_date),
+            has_task_title=bool(classification.task_title)
+        )
+        
         # Check confidence threshold
         confidence_min = float(os.environ.get("LLM_CONFIDENCE_MIN", "0.6"))
         if classification.confidence < confidence_min:
-            logger.info(f"Classification below confidence threshold: {classification.confidence}")
+            logger.info(
+                "Classification below confidence threshold",
+                correlation_id=correlation_id,
+                confidence=classification.confidence,
+                confidence_threshold=confidence_min,
+                message_type=classification.message_type.value if classification.message_type else None
+            )
             return {"skipped": True}
         
         # Skip IGNORE messages
         if classification.message_type == MessageType.IGNORE:
+            logger.info(
+                "Message classified as IGNORE, skipping",
+                correlation_id=correlation_id,
+                confidence=classification.confidence
+            )
             return {"skipped": True}
         
         # Enqueue to intake queue
@@ -460,20 +551,35 @@ async def classify_and_enqueue_slack_message(
             "attachments": attachments or []
         }
         
-        await enqueue_intake_message(envelope, classification.message_type.value)
+        with log_timing("enqueue_intake_message", logger=logger, correlation_id=correlation_id):
+            await enqueue_intake_message(envelope, classification.message_type.value)
         
         logger.info(
             "Message classified and enqueued",
-            extra={
-                "message_type": classification.message_type.value,
-                "channel_id": channel_id,
-                "confidence": classification.confidence
-            }
+            correlation_id=correlation_id,
+            message_type=classification.message_type.value,
+            channel_id=channel_id,
+            slack_user_id=mask_user_id(slack_user_id),
+            confidence=classification.confidence,
+            group_key=classification.group_key,
+            task_key=classification.task_key,
+            listing_address=classification.listing.get("address") if classification.listing else None,
+            assignee_hint=classification.assignee_hint,
+            due_date=classification.due_date,
+            task_title=classification.task_title,
+            idempotency_key=idempotency_key
         )
         
         return {"ok": True}
         
     except Exception as e:
-        logger.error(f"Classification error: {e}", exc_info=True)
+        logger.error(
+            "Classification error",
+            correlation_id=correlation_id,
+            channel_id=channel_id,
+            slack_user_id=mask_user_id(slack_user_id),
+            error=str(e),
+            exc_info=True
+        )
         return {"skipped": True}
 

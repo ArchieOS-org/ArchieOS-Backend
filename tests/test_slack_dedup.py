@@ -40,3 +40,4 @@ def test_generate_event_id_fallback_hash():
     event_id = generate_event_id(body, headers)
     assert event_id.startswith("slack_event_") or len(event_id) == 40  # SHA1 hex length
 
+

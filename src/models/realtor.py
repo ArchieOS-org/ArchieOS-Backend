@@ -20,3 +20,4 @@ class Realtor(BaseModel):
     deleted_at: Optional[str] = None
     metadata: Optional[dict] = Field(default_factory=dict, description="Additional metadata")
 
+

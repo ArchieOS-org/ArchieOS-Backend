@@ -94,3 +94,4 @@ def test_agent_task_inputs_outputs_default():
     assert task.inputs == {}
     assert task.outputs == {}
 
+

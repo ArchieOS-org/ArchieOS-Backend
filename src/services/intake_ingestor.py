@@ -2,7 +2,6 @@
 
 import os
 import json
-import logging
 import re
 from typing import Optional
 from datetime import date
@@ -20,8 +19,15 @@ from src.services.supabase_client import (
 from src.services.slack_users import resolve_slack_user, generate_realtor_id
 from src.models.classification import ClassificationV1, MessageType, TaskKey
 from src.utils.errors import IntakeError
+from src.utils.logging import (
+    get_structured_logger,
+    log_timing,
+    sanitize_message_text,
+    mask_user_id,
+    get_correlation_id,
+)
 
-logger = logging.getLogger(__name__)
+logger = get_structured_logger(__name__)
 
 
 def generate_listing_id() -> str:
@@ -65,7 +71,17 @@ def map_task_key_to_category(task_key: str) -> str:
 
 async def process_group_message(payload: dict, envelope: dict) -> None:
     """Process a GROUP message - create listing and create activities (listing tasks)."""
-    logger.info("Processing GROUP message", extra={"payload_keys": list(payload.keys())})
+    correlation_id = get_correlation_id()
+    
+    logger.info(
+        "Processing GROUP message",
+        correlation_id=correlation_id,
+        group_key=payload.get("group_key"),
+        has_listing=bool(payload.get("listing")),
+        has_assignee_hint=bool(payload.get("assignee_hint")),
+        has_due_date=bool(payload.get("due_date")),
+        confidence=payload.get("confidence")
+    )
     
     # Extract Slack metadata
     slack_meta = {}
@@ -87,18 +103,28 @@ async def process_group_message(payload: dict, envelope: dict) -> None:
     resolved_realtor = None
     if slack_meta.get("userId"):
         try:
-            resolved_realtor = await resolve_slack_user(slack_meta["userId"])
-            if resolved_realtor:
-                logger.info(
-                    "Resolved Slack user to realtor",
-                    extra={
-                        "slack_user_id": slack_meta["userId"],
-                        "realtor_id": resolved_realtor.get("realtor_id"),
-                        "name": resolved_realtor.get("name")
-                    }
-                )
+            with log_timing(
+                "resolve_slack_user",
+                logger=logger,
+                correlation_id=correlation_id,
+                slack_user_id=mask_user_id(slack_meta["userId"])
+            ):
+                resolved_realtor = await resolve_slack_user(slack_meta["userId"])
+                if resolved_realtor:
+                    logger.info(
+                        "Resolved Slack user to realtor",
+                        correlation_id=correlation_id,
+                        slack_user_id=mask_user_id(slack_meta["userId"]),
+                        realtor_id=resolved_realtor.get("realtor_id"),
+                        name=resolved_realtor.get("name")
+                    )
         except Exception as e:
-            logger.warning(f"Failed to resolve Slack user: {e}")
+            logger.warning(
+                "Failed to resolve Slack user",
+                correlation_id=correlation_id,
+                slack_user_id=mask_user_id(slack_meta["userId"]),
+                error=str(e)
+            )
     
     # Extract listing info
     listing_info = payload.get("listing", {})
@@ -130,14 +156,24 @@ async def process_group_message(payload: dict, envelope: dict) -> None:
         "due_date": due_date.isoformat() if due_date else None,
     }
     
-    listing = await create_listing(listing_data)
+    with log_timing(
+        "create_listing",
+        logger=logger,
+        correlation_id=correlation_id,
+        listing_id=listing_id,
+        listing_type=listing_type
+    ):
+        listing = await create_listing(listing_data)
+    
     logger.info(
         "Created listing from GROUP",
-        extra={
-            "listing_id": listing.get("listing_id"),
-            "address": listing.get("address_string"),
-            "realtor_id": listing.get("realtor_id")
-        }
+        correlation_id=correlation_id,
+        listing_id=listing.get("listing_id"),
+        address=listing.get("address_string"),
+        listing_type=listing_type,
+        realtor_id=listing.get("realtor_id"),
+        group_key=payload.get("group_key"),
+        due_date=due_date.isoformat() if due_date else None
     )
     
     # TODO: Seed default activities from templates based on group_key
@@ -145,28 +181,49 @@ async def process_group_message(payload: dict, envelope: dict) -> None:
     
     # Write to classifications table for audit
     try:
-        from src.services.supabase_client import SupabaseClient
-        async with SupabaseClient() as client:
-            client.table("classifications").insert({
-                "event_id": envelope.get("idempotency_key", ""),
-                "user_id": slack_meta.get("userId", ""),
-                "channel_id": slack_meta.get("channelId", ""),
-                "message_ts": slack_meta.get("ts", ""),
-                "message": envelope.get("source", {}).get("text", ""),
-                "classification": payload,
-                "message_type": "GROUP",
-                "group_key": payload.get("group_key"),
-                "assignee_hint": payload.get("assignee_hint"),
-                "due_date": due_date.isoformat() if due_date else None,
-                "confidence": payload.get("confidence", 0.0)
-            }).execute()
+        with log_timing("write_classification", logger=logger, correlation_id=correlation_id):
+            from src.services.supabase_client import SupabaseClient
+            async with SupabaseClient() as client:
+                client.table("classifications").insert({
+                    "event_id": envelope.get("idempotency_key", ""),
+                    "user_id": slack_meta.get("userId", ""),
+                    "channel_id": slack_meta.get("channelId", ""),
+                    "message_ts": slack_meta.get("ts", ""),
+                    "message": envelope.get("source", {}).get("text", ""),
+                    "classification": payload,
+                    "message_type": "GROUP",
+                    "group_key": payload.get("group_key"),
+                    "assignee_hint": payload.get("assignee_hint"),
+                    "due_date": due_date.isoformat() if due_date else None,
+                    "confidence": payload.get("confidence", 0.0)
+                }).execute()
+        logger.debug(
+            "Classification written to database",
+            correlation_id=correlation_id,
+            listing_id=listing_id
+        )
     except Exception as e:
-        logger.warning(f"Failed to write classification: {e}")
+        logger.warning(
+            "Failed to write classification",
+            correlation_id=correlation_id,
+            listing_id=listing_id,
+            error=str(e)
+        )
 
 
 async def process_stray_message(payload: dict, envelope: dict) -> None:
     """Process a STRAY message - create agent task (not tied to a listing)."""
-    logger.info("Processing STRAY message", extra={"task_key": payload.get("task_key")})
+    correlation_id = get_correlation_id()
+    
+    logger.info(
+        "Processing STRAY message",
+        correlation_id=correlation_id,
+        task_key=payload.get("task_key"),
+        has_task_title=bool(payload.get("task_title")),
+        has_assignee_hint=bool(payload.get("assignee_hint")),
+        has_due_date=bool(payload.get("due_date")),
+        confidence=payload.get("confidence")
+    )
     
     # Check for promotion to listing (certain task_keys become listings)
     task_key = payload.get("task_key", "").upper()
@@ -180,7 +237,12 @@ async def process_stray_message(payload: dict, envelope: dict) -> None:
         promote_to_listing = {"dealType": "RELIST"}
     
     if promote_to_listing:
-        logger.info("Promoting STRAY to listing", extra={"promote": promote_to_listing})
+        logger.info(
+            "Promoting STRAY to listing",
+            correlation_id=correlation_id,
+            task_key=task_key,
+            promote_deal_type=promote_to_listing.get("dealType")
+        )
         # Create listing instead of agent task
         listing_info = payload.get("listing", {})
         listing_type = listing_info.get("type") or "SALE"
@@ -205,8 +267,21 @@ async def process_stray_message(payload: dict, envelope: dict) -> None:
             "due_date": due_date.isoformat() if due_date else None,
         }
         
-        listing = await create_listing(listing_data)
-        logger.info("Promoted STRAY to listing", extra={"listing_id": listing.get("listing_id")})
+        with log_timing(
+            "create_listing_from_stray",
+            logger=logger,
+            correlation_id=correlation_id,
+            listing_id=listing_id
+        ):
+            listing = await create_listing(listing_data)
+        
+        logger.info(
+            "Promoted STRAY to listing",
+            correlation_id=correlation_id,
+            listing_id=listing.get("listing_id"),
+            listing_type=listing_type,
+            task_key=task_key
+        )
         return
     
     # Extract Slack metadata
@@ -230,12 +305,28 @@ async def process_stray_message(payload: dict, envelope: dict) -> None:
     resolved_realtor = None
     if slack_meta.get("userId"):
         try:
-            resolved_realtor = await resolve_slack_user(slack_meta["userId"])
-            if not resolved_realtor:
-                logger.error(f"Failed to resolve realtor for Slack user: {slack_meta['userId']}")
-                return
+            with log_timing(
+                "resolve_slack_user",
+                logger=logger,
+                correlation_id=correlation_id,
+                slack_user_id=mask_user_id(slack_meta["userId"])
+            ):
+                resolved_realtor = await resolve_slack_user(slack_meta["userId"])
+                if not resolved_realtor:
+                    logger.error(
+                        "Failed to resolve realtor for Slack user",
+                        correlation_id=correlation_id,
+                        slack_user_id=mask_user_id(slack_meta["userId"])
+                    )
+                    return
         except Exception as e:
-            logger.error(f"Failed to resolve Slack user: {e}")
+            logger.error(
+                "Failed to resolve Slack user",
+                correlation_id=correlation_id,
+                slack_user_id=mask_user_id(slack_meta["userId"]),
+                error=str(e),
+                exc_info=True
+            )
             return
     
     # Create friendly title from text
@@ -293,57 +384,94 @@ async def process_stray_message(payload: dict, envelope: dict) -> None:
         }
     }
     
-    task = await create_agent_task(task_data)
+    with log_timing(
+        "create_agent_task",
+        logger=logger,
+        correlation_id=correlation_id,
+        task_id=task_id,
+        task_key=task_key
+    ):
+        task = await create_agent_task(task_data)
+    
     logger.info(
         "Created agent task",
-        extra={
-            "task_id": task.get("task_id"),
-            "realtor_id": task.get("realtor_id"),
-            "name": task.get("name")
-        }
+        correlation_id=correlation_id,
+        task_id=task.get("task_id"),
+        realtor_id=task.get("realtor_id"),
+        name=task.get("name"),
+        task_key=task_key,
+        task_category=task_category,
+        due_date=due_date.isoformat() if due_date else None
     )
     
     # Write to classifications table for audit
     try:
-        from src.services.supabase_client import SupabaseClient
-        async with SupabaseClient() as client:
-            client.table("classifications").insert({
-                "event_id": envelope.get("idempotency_key", ""),
-                "user_id": slack_meta.get("userId", ""),
-                "channel_id": slack_meta.get("channelId", ""),
-                "message_ts": slack_meta.get("ts", ""),
-                "message": slack_meta.get("text", ""),
-                "classification": payload,
-                "message_type": "STRAY",
-                "task_key": task_key,
-                "assignee_hint": payload.get("assignee_hint"),
-                "due_date": due_date.isoformat() if due_date else None,
-                "confidence": payload.get("confidence", 0.0)
-            }).execute()
+        with log_timing("write_classification", logger=logger, correlation_id=correlation_id):
+            from src.services.supabase_client import SupabaseClient
+            async with SupabaseClient() as client:
+                client.table("classifications").insert({
+                    "event_id": envelope.get("idempotency_key", ""),
+                    "user_id": slack_meta.get("userId", ""),
+                    "channel_id": slack_meta.get("channelId", ""),
+                    "message_ts": slack_meta.get("ts", ""),
+                    "message": slack_meta.get("text", ""),
+                    "classification": payload,
+                    "message_type": "STRAY",
+                    "task_key": task_key,
+                    "assignee_hint": payload.get("assignee_hint"),
+                    "due_date": due_date.isoformat() if due_date else None,
+                    "confidence": payload.get("confidence", 0.0)
+                }).execute()
+        logger.debug(
+            "Classification written to database",
+            correlation_id=correlation_id,
+            task_id=task_id
+        )
     except Exception as e:
-        logger.warning(f"Failed to write classification: {e}")
+        logger.warning(
+            "Failed to write classification",
+            correlation_id=correlation_id,
+            task_id=task_id,
+            error=str(e)
+        )
 
 
 async def process_info_request(payload: dict) -> None:
     """Process an INFO_REQUEST message - log for admin review."""
-    logger.info("Processing INFO_REQUEST")
+    correlation_id = get_correlation_id()
+    
+    logger.info(
+        "Processing INFO_REQUEST",
+        correlation_id=correlation_id,
+        confidence=payload.get("confidence", 0.0),
+        has_explanations=bool(payload.get("explanations"))
+    )
     
     # Write to classifications table for audit
     try:
-        from src.services.supabase_client import SupabaseClient
-        async with SupabaseClient() as client:
-            client.table("classifications").insert({
-                "event_id": "",
-                "user_id": "",
-                "channel_id": "",
-                "message_ts": "",
-                "message": "",
-                "classification": payload,
-                "message_type": "INFO_REQUEST",
-                "confidence": payload.get("confidence", 0.0)
-            }).execute()
+        with log_timing("write_classification", logger=logger, correlation_id=correlation_id):
+            from src.services.supabase_client import SupabaseClient
+            async with SupabaseClient() as client:
+                client.table("classifications").insert({
+                    "event_id": "",
+                    "user_id": "",
+                    "channel_id": "",
+                    "message_ts": "",
+                    "message": "",
+                    "classification": payload,
+                    "message_type": "INFO_REQUEST",
+                    "confidence": payload.get("confidence", 0.0)
+                }).execute()
+        logger.debug(
+            "INFO_REQUEST classification written to database",
+            correlation_id=correlation_id
+        )
     except Exception as e:
-        logger.warning(f"Failed to write classification: {e}")
+        logger.warning(
+            "Failed to write classification",
+            correlation_id=correlation_id,
+            error=str(e)
+        )
 
 
 async def poll_and_ingest_once(max_messages: int = 5) -> int:
@@ -352,15 +480,37 @@ async def poll_and_ingest_once(max_messages: int = 5) -> int:
     
     Returns number of messages processed.
     """
+    correlation_id = get_correlation_id()
+    
+    logger.info(
+        "Polling intake queue",
+        correlation_id=correlation_id,
+        max_messages=max_messages
+    )
+    
     try:
         # Get batch of unprocessed messages
-        batch = await get_intake_queue_batch(max_messages)
+        with log_timing("get_intake_queue_batch", logger=logger, correlation_id=correlation_id):
+            batch = await get_intake_queue_batch(max_messages)
         
         if not batch:
+            logger.debug(
+                "No messages in queue",
+                correlation_id=correlation_id
+            )
             return 0
         
+        logger.info(
+            "Retrieved batch from intake queue",
+            correlation_id=correlation_id,
+            batch_size=len(batch),
+            max_messages=max_messages
+        )
+        
         processed = 0
-        for item in batch:
+        failed = 0
+        
+        for idx, item in enumerate(batch):
             queue_id = item.get("id")
             envelope = item.get("envelope", {})
             
@@ -368,7 +518,12 @@ async def poll_and_ingest_once(max_messages: int = 5) -> int:
                 # Check if already processed (idempotency)
                 event_id = envelope.get("idempotency_key") or str(queue_id)
                 if await check_intake_event_exists(str(event_id)):
-                    logger.info(f"Skipping duplicate event: {event_id}")
+                    logger.info(
+                        "Skipping duplicate event",
+                        correlation_id=correlation_id,
+                        event_id=event_id,
+                        queue_id=str(queue_id)
+                    )
                     await mark_queue_item_processed(str(queue_id))
                     processed += 1
                     continue
@@ -377,32 +532,79 @@ async def poll_and_ingest_once(max_messages: int = 5) -> int:
                 payload = envelope.get("payload", {})
                 message_type = payload.get("message_type")
                 
+                logger.info(
+                    "Processing queue item",
+                    correlation_id=correlation_id,
+                    queue_id=str(queue_id),
+                    event_id=event_id,
+                    message_type=message_type,
+                    item_index=idx + 1,
+                    total_items=len(batch)
+                )
+                
                 # Process based on message type
-                if message_type == "GROUP":
-                    await process_group_message(payload, envelope)
-                elif message_type == "STRAY":
-                    await process_stray_message(payload, envelope)
-                elif message_type == "INFO_REQUEST":
-                    await process_info_request(payload)
-                else:
-                    logger.warning(f"Unknown message type: {message_type}")
+                with log_timing(
+                    f"process_{message_type.lower()}_message",
+                    logger=logger,
+                    correlation_id=correlation_id,
+                    queue_id=str(queue_id),
+                    message_type=message_type
+                ):
+                    if message_type == "GROUP":
+                        await process_group_message(payload, envelope)
+                    elif message_type == "STRAY":
+                        await process_stray_message(payload, envelope)
+                    elif message_type == "INFO_REQUEST":
+                        await process_info_request(payload)
+                    else:
+                        logger.warning(
+                            "Unknown message type",
+                            correlation_id=correlation_id,
+                            queue_id=str(queue_id),
+                            message_type=message_type
+                        )
                 
                 # Mark as processed
                 await insert_intake_event(str(event_id))
                 await mark_queue_item_processed(str(queue_id))
                 processed += 1
                 
+                logger.debug(
+                    "Queue item processed successfully",
+                    correlation_id=correlation_id,
+                    queue_id=str(queue_id),
+                    message_type=message_type
+                )
+                
             except Exception as e:
+                failed += 1
                 logger.error(
-                    f"Error processing queue item: {e}",
-                    extra={"queue_id": queue_id, "error": str(e)},
+                    "Error processing queue item",
+                    correlation_id=correlation_id,
+                    queue_id=str(queue_id),
+                    item_index=idx + 1,
+                    total_items=len(batch),
+                    error=str(e),
                     exc_info=True
                 )
                 # Don't mark as processed on error - let it retry
                 # Could increment retry_count here
         
+        logger.info(
+            "Intake queue poll completed",
+            correlation_id=correlation_id,
+            batch_size=len(batch),
+            processed_successfully=processed,
+            processed_failed=failed
+        )
+        
         return processed
         
     except Exception as e:
-        logger.error(f"Error polling intake queue: {e}", exc_info=True)
+        logger.error(
+            "Error polling intake queue",
+            correlation_id=correlation_id,
+            error=str(e),
+            exc_info=True
+        )
         return 0

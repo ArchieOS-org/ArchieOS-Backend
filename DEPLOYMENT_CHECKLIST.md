@@ -77,3 +77,4 @@ vercel --prod
 4. Check Supabase `intake_queue` table for processed messages
 5. Verify `listings` or `agent_tasks` tables have new records
 
+

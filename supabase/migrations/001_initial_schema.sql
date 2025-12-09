@@ -88,3 +88,4 @@ CREATE POLICY "Service role can access all" ON tasks
 CREATE POLICY "Service role can access all" ON audit_log
   FOR ALL USING (auth.role() = 'service_role');
 
+

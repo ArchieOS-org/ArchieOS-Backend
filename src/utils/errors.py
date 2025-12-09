@@ -27,3 +27,4 @@ class SupabaseError(ArchieOSError):
     """Supabase operation error."""
     pass
 
+

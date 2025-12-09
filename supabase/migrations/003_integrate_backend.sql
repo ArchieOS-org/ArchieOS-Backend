@@ -81,3 +81,4 @@ $$ LANGUAGE plpgsql;
 -- Note: audit_log table check - if it doesn't exist, it can be created separately
 -- We're keeping this migration minimal and focused on intake pipeline only
 
+

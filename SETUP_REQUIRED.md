@@ -53,3 +53,4 @@ curl https://your-app.vercel.app/api/health
 
 Then configure Slack webhook URL in your Slack app settings.
 
+

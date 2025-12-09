@@ -109,3 +109,4 @@ async def test_debounce_buffer_multiple_channels():
     assert len(buffer.buffer["C123456"]) == 1
     assert len(buffer.buffer["C789012"]) == 1
 
+

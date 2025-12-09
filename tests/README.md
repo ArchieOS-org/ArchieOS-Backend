@@ -177,3 +177,4 @@ def test_multiple_scenarios(input, expected):
 - Run with `--cov=src` flag
 - Check `pytest.ini` configuration
 
+

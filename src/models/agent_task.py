@@ -33,3 +33,4 @@ class AgentTask(BaseModel):
         description="Task category: ADMIN, MARKETING, PHOTO, STAGING, INSPECTION, OTHER"
     )
 
+
