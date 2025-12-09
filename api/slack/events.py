@@ -129,14 +129,18 @@ class handler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": "service initialization failed"}).encode('utf-8'))
                 return
             
-            # Get Slack headers
-            timestamp = self.headers.get("x-slack-request-timestamp", "")
-            signature = self.headers.get("x-slack-signature", "")
+            # Get Slack headers (case-insensitive)
+            timestamp = self.headers.get("X-Slack-Request-Timestamp") or self.headers.get("x-slack-request-timestamp", "")
+            signature = self.headers.get("X-Slack-Signature") or self.headers.get("x-slack-signature", "")
+            
+            # Debug logging
+            _logger.info(f"Slack headers - timestamp: {timestamp[:10] if timestamp else 'MISSING'}..., signature: {signature[:20] if signature else 'MISSING'}...")
+            _logger.info(f"Body length: {len(raw_body)}, body preview: {raw_body[:100] if raw_body else 'EMPTY'}...")
             
             # Verify signature
             is_valid = _verify_slack_request(timestamp, signature, raw_body)
             if not is_valid:
-                _logger.warning("Slack signature verification failed")
+                _logger.warning(f"Slack signature verification failed - has_timestamp={bool(timestamp)}, has_signature={bool(signature)}")
                 self.send_response(401)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()

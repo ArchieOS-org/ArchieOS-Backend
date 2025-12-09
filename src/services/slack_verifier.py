@@ -92,7 +92,11 @@ def verify_slack_request(
     
     try:
         secret = get_signing_secret()
-        return verify_slack_signature(secret, timestamp, raw_body, signature)
+        logger.info(f"Verifying signature - secret_length={len(secret)}, timestamp={timestamp}, signature_preview={signature[:30] if signature else 'NONE'}...")
+        result = verify_slack_signature(secret, timestamp, raw_body, signature)
+        if not result:
+            logger.warning(f"Signature mismatch - timestamp_valid={bool(timestamp)}, body_length={len(raw_body)}")
+        return result
     except Exception as e:
         logger.error(f"Slack verification error: {e}")
         return False
