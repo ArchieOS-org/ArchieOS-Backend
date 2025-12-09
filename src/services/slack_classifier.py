@@ -440,7 +440,6 @@ async def classify_and_enqueue_slack_message(
     
     try:
         # Build prompt
-        with log_timing("build_classification_prompt", logger=logger, correlation_id=correlation_id):
         prompt_data = build_classification_prompt(text, slack_user_id, channel_id, ts, links, attachments)
         
         # Build full prompt
@@ -551,7 +550,6 @@ async def classify_and_enqueue_slack_message(
             "attachments": attachments or []
         }
         
-        with log_timing("enqueue_intake_message", logger=logger, correlation_id=correlation_id):
         await enqueue_intake_message(envelope, classification.message_type.value)
         
         logger.info(

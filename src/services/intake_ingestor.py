@@ -103,12 +103,6 @@ async def process_group_message(payload: dict, envelope: dict) -> None:
     resolved_realtor = None
     if slack_meta.get("userId"):
         try:
-            with log_timing(
-                "resolve_slack_user",
-                logger=logger,
-                correlation_id=correlation_id,
-                slack_user_id=mask_user_id(slack_meta["userId"])
-            ):
             resolved_realtor = await resolve_slack_user(slack_meta["userId"])
             if resolved_realtor:
                 logger.info(
@@ -156,13 +150,6 @@ async def process_group_message(payload: dict, envelope: dict) -> None:
         "due_date": due_date.isoformat() if due_date else None,
     }
     
-    with log_timing(
-        "create_listing",
-        logger=logger,
-        correlation_id=correlation_id,
-        listing_id=listing_id,
-        listing_type=listing_type
-    ):
     listing = await create_listing(listing_data)
     
     logger.info(
@@ -181,7 +168,6 @@ async def process_group_message(payload: dict, envelope: dict) -> None:
     
     # Write to classifications table for audit
     try:
-        with log_timing("write_classification", logger=logger, correlation_id=correlation_id):
         from src.services.supabase_client import SupabaseClient
         async with SupabaseClient() as client:
             client.table("classifications").insert({
@@ -267,12 +253,6 @@ async def process_stray_message(payload: dict, envelope: dict) -> None:
             "due_date": due_date.isoformat() if due_date else None,
         }
         
-        with log_timing(
-            "create_listing_from_stray",
-            logger=logger,
-            correlation_id=correlation_id,
-            listing_id=listing_id
-        ):
         listing = await create_listing(listing_data)
         
         logger.info(
@@ -305,15 +285,9 @@ async def process_stray_message(payload: dict, envelope: dict) -> None:
     resolved_realtor = None
     if slack_meta.get("userId"):
         try:
-            with log_timing(
-                "resolve_slack_user",
-                logger=logger,
-                correlation_id=correlation_id,
-                slack_user_id=mask_user_id(slack_meta["userId"])
-            ):
             resolved_realtor = await resolve_slack_user(slack_meta["userId"])
             if not resolved_realtor:
-                    logger.error(
+                logger.error(
                         "Failed to resolve realtor for Slack user",
                         correlation_id=correlation_id,
                         slack_user_id=mask_user_id(slack_meta["userId"])
@@ -384,13 +358,6 @@ async def process_stray_message(payload: dict, envelope: dict) -> None:
         }
     }
     
-    with log_timing(
-        "create_agent_task",
-        logger=logger,
-        correlation_id=correlation_id,
-        task_id=task_id,
-        task_key=task_key
-    ):
     task = await create_agent_task(task_data)
     
     logger.info(
@@ -406,7 +373,6 @@ async def process_stray_message(payload: dict, envelope: dict) -> None:
     
     # Write to classifications table for audit
     try:
-        with log_timing("write_classification", logger=logger, correlation_id=correlation_id):
         from src.services.supabase_client import SupabaseClient
         async with SupabaseClient() as client:
             client.table("classifications").insert({
@@ -449,7 +415,6 @@ async def process_info_request(payload: dict) -> None:
     
     # Write to classifications table for audit
     try:
-        with log_timing("write_classification", logger=logger, correlation_id=correlation_id):
         from src.services.supabase_client import SupabaseClient
         async with SupabaseClient() as client:
             client.table("classifications").insert({
@@ -490,7 +455,6 @@ async def poll_and_ingest_once(max_messages: int = 5) -> int:
     
     try:
         # Get batch of unprocessed messages
-        with log_timing("get_intake_queue_batch", logger=logger, correlation_id=correlation_id):
         batch = await get_intake_queue_batch(max_messages)
         
         if not batch:
@@ -543,13 +507,6 @@ async def poll_and_ingest_once(max_messages: int = 5) -> int:
                 )
                 
                 # Process based on message type
-                with log_timing(
-                    f"process_{message_type.lower()}_message",
-                    logger=logger,
-                    correlation_id=correlation_id,
-                    queue_id=str(queue_id),
-                    message_type=message_type
-                ):
                 if message_type == "GROUP":
                     await process_group_message(payload, envelope)
                 elif message_type == "STRAY":
@@ -557,7 +514,7 @@ async def poll_and_ingest_once(max_messages: int = 5) -> int:
                 elif message_type == "INFO_REQUEST":
                     await process_info_request(payload)
                 else:
-                        logger.warning(
+                    logger.warning(
                             "Unknown message type",
                             correlation_id=correlation_id,
                             queue_id=str(queue_id),
