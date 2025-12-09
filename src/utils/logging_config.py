@@ -4,7 +4,11 @@ import os
 import logging
 import sys
 from typing import Optional
-from pythonjsonlogger import jsonlogger
+
+try:
+    from pythonjsonlogger import jsonlogger
+except ImportError:
+    jsonlogger = None
 
 
 class LoggingConfig:
@@ -33,11 +37,17 @@ class LoggingConfig:
         handler.setLevel(getattr(logging, cls.LOG_LEVEL, logging.INFO))
         
         # Set formatter based on LOG_FORMAT
-        if cls.LOG_FORMAT == "json":
-            formatter = jsonlogger.JsonFormatter(
-                "%(timestamp)s %(level)s %(name)s %(message)s",
-                timestamp=True
-            )
+        if cls.LOG_FORMAT == "json" and jsonlogger is not None:
+            try:
+                formatter = jsonlogger.JsonFormatter(
+                    "%(timestamp)s %(level)s %(name)s %(message)s",
+                    timestamp=True
+                )
+            except Exception:
+                # Fallback to standard formatter if JSON logger fails
+                formatter = logging.Formatter(
+                    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+                )
         else:
             formatter = logging.Formatter(
                 '%(asctime)s - %(name)s - %(levelname)s - %(message)s'

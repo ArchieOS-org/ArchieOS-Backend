@@ -18,9 +18,16 @@ from src.utils.logging import (
     generate_correlation_id,
 )
 
-# Setup logging configuration
-LoggingConfig.setup_logging()
-logger = get_structured_logger(__name__)
+# Setup logging configuration (with error handling)
+try:
+    LoggingConfig.setup_logging()
+    logger = get_structured_logger(__name__)
+except Exception as e:
+    # Fallback to basic logging if setup fails
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Failed to setup structured logging: {e}")
 
 
 def normalize_event(body: dict) -> dict | None:
@@ -101,14 +108,43 @@ def handler(request):
     - headers: dict of headers
     - body: request body (string or bytes)
     """
+    # Handle URL verification FIRST (before any complex setup)
+    # This is critical for Slack's webhook verification
+    try:
+        body_data = request.get("body", "")
+        if isinstance(body_data, bytes):
+            raw_body = body_data.decode("utf-8")
+        else:
+            raw_body = str(body_data)
+        
+        # Try to parse JSON to check for URL verification
+        try:
+            body = json.loads(raw_body)
+            if body.get("type") == "url_verification":
+                challenge = body.get("challenge")
+                if challenge:
+                    return {
+                        "statusCode": 200,
+                        "headers": {"Content-Type": "application/json"},
+                        "body": json.dumps({"challenge": challenge})
+                    }
+        except (json.JSONDecodeError, AttributeError):
+            pass  # Continue to normal processing
+    except Exception:
+        pass  # Continue to normal processing if verification check fails
+    
+    # Now proceed with normal request processing
     request_start_time = time.time()
     
     # Extract or generate correlation ID
     headers = request.get("headers", {})
-    correlation_id = headers.get(
-        LoggingConfig.LOG_CORRELATION_ID_HEADER,
-        generate_correlation_id()
-    )
+    try:
+        correlation_id = headers.get(
+            LoggingConfig.LOG_CORRELATION_ID_HEADER,
+            generate_correlation_id()
+        )
+    except:
+        correlation_id = generate_correlation_id()
     
     # Get Vercel request ID if available
     vercel_request_id = headers.get("x-vercel-id") or headers.get("x-request-id")
@@ -170,24 +206,6 @@ def handler(request):
                 correlation_id=correlation_id,
                 event_type=event_type
             )
-            
-            # Handle URL verification challenge
-            if event_type == "url_verification":
-                challenge = body.get("challenge")
-                if challenge:
-                    logger.info(
-                        "URL verification challenge received",
-                        correlation_id=correlation_id,
-                        challenge_length=len(challenge) if challenge else 0
-                    )
-                    return {
-                        "statusCode": 200,
-                        "headers": {
-                            "Content-Type": "application/json",
-                            LoggingConfig.LOG_CORRELATION_ID_HEADER: correlation_id
-                        },
-                        "body": json.dumps({"challenge": challenge})
-                    }
             
             # Get Slack headers
             timestamp = headers.get("x-slack-request-timestamp", "")
