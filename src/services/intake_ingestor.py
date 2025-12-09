@@ -109,15 +109,15 @@ async def process_group_message(payload: dict, envelope: dict) -> None:
                 correlation_id=correlation_id,
                 slack_user_id=mask_user_id(slack_meta["userId"])
             ):
-                resolved_realtor = await resolve_slack_user(slack_meta["userId"])
-                if resolved_realtor:
-                    logger.info(
-                        "Resolved Slack user to realtor",
+            resolved_realtor = await resolve_slack_user(slack_meta["userId"])
+            if resolved_realtor:
+                logger.info(
+                    "Resolved Slack user to realtor",
                         correlation_id=correlation_id,
                         slack_user_id=mask_user_id(slack_meta["userId"]),
                         realtor_id=resolved_realtor.get("realtor_id"),
                         name=resolved_realtor.get("name")
-                    )
+                )
         except Exception as e:
             logger.warning(
                 "Failed to resolve Slack user",
@@ -163,7 +163,7 @@ async def process_group_message(payload: dict, envelope: dict) -> None:
         listing_id=listing_id,
         listing_type=listing_type
     ):
-        listing = await create_listing(listing_data)
+    listing = await create_listing(listing_data)
     
     logger.info(
         "Created listing from GROUP",
@@ -182,21 +182,21 @@ async def process_group_message(payload: dict, envelope: dict) -> None:
     # Write to classifications table for audit
     try:
         with log_timing("write_classification", logger=logger, correlation_id=correlation_id):
-            from src.services.supabase_client import SupabaseClient
-            async with SupabaseClient() as client:
-                client.table("classifications").insert({
-                    "event_id": envelope.get("idempotency_key", ""),
-                    "user_id": slack_meta.get("userId", ""),
-                    "channel_id": slack_meta.get("channelId", ""),
-                    "message_ts": slack_meta.get("ts", ""),
-                    "message": envelope.get("source", {}).get("text", ""),
-                    "classification": payload,
-                    "message_type": "GROUP",
-                    "group_key": payload.get("group_key"),
-                    "assignee_hint": payload.get("assignee_hint"),
-                    "due_date": due_date.isoformat() if due_date else None,
-                    "confidence": payload.get("confidence", 0.0)
-                }).execute()
+        from src.services.supabase_client import SupabaseClient
+        async with SupabaseClient() as client:
+            client.table("classifications").insert({
+                "event_id": envelope.get("idempotency_key", ""),
+                "user_id": slack_meta.get("userId", ""),
+                "channel_id": slack_meta.get("channelId", ""),
+                "message_ts": slack_meta.get("ts", ""),
+                "message": envelope.get("source", {}).get("text", ""),
+                "classification": payload,
+                "message_type": "GROUP",
+                "group_key": payload.get("group_key"),
+                "assignee_hint": payload.get("assignee_hint"),
+                "due_date": due_date.isoformat() if due_date else None,
+                "confidence": payload.get("confidence", 0.0)
+            }).execute()
         logger.debug(
             "Classification written to database",
             correlation_id=correlation_id,
@@ -273,7 +273,7 @@ async def process_stray_message(payload: dict, envelope: dict) -> None:
             correlation_id=correlation_id,
             listing_id=listing_id
         ):
-            listing = await create_listing(listing_data)
+        listing = await create_listing(listing_data)
         
         logger.info(
             "Promoted STRAY to listing",
@@ -311,14 +311,14 @@ async def process_stray_message(payload: dict, envelope: dict) -> None:
                 correlation_id=correlation_id,
                 slack_user_id=mask_user_id(slack_meta["userId"])
             ):
-                resolved_realtor = await resolve_slack_user(slack_meta["userId"])
-                if not resolved_realtor:
+            resolved_realtor = await resolve_slack_user(slack_meta["userId"])
+            if not resolved_realtor:
                     logger.error(
                         "Failed to resolve realtor for Slack user",
                         correlation_id=correlation_id,
                         slack_user_id=mask_user_id(slack_meta["userId"])
                     )
-                    return
+                return
         except Exception as e:
             logger.error(
                 "Failed to resolve Slack user",
@@ -391,7 +391,7 @@ async def process_stray_message(payload: dict, envelope: dict) -> None:
         task_id=task_id,
         task_key=task_key
     ):
-        task = await create_agent_task(task_data)
+    task = await create_agent_task(task_data)
     
     logger.info(
         "Created agent task",
@@ -407,21 +407,21 @@ async def process_stray_message(payload: dict, envelope: dict) -> None:
     # Write to classifications table for audit
     try:
         with log_timing("write_classification", logger=logger, correlation_id=correlation_id):
-            from src.services.supabase_client import SupabaseClient
-            async with SupabaseClient() as client:
-                client.table("classifications").insert({
-                    "event_id": envelope.get("idempotency_key", ""),
-                    "user_id": slack_meta.get("userId", ""),
-                    "channel_id": slack_meta.get("channelId", ""),
-                    "message_ts": slack_meta.get("ts", ""),
-                    "message": slack_meta.get("text", ""),
-                    "classification": payload,
-                    "message_type": "STRAY",
-                    "task_key": task_key,
-                    "assignee_hint": payload.get("assignee_hint"),
-                    "due_date": due_date.isoformat() if due_date else None,
-                    "confidence": payload.get("confidence", 0.0)
-                }).execute()
+        from src.services.supabase_client import SupabaseClient
+        async with SupabaseClient() as client:
+            client.table("classifications").insert({
+                "event_id": envelope.get("idempotency_key", ""),
+                "user_id": slack_meta.get("userId", ""),
+                "channel_id": slack_meta.get("channelId", ""),
+                "message_ts": slack_meta.get("ts", ""),
+                "message": slack_meta.get("text", ""),
+                "classification": payload,
+                "message_type": "STRAY",
+                "task_key": task_key,
+                "assignee_hint": payload.get("assignee_hint"),
+                "due_date": due_date.isoformat() if due_date else None,
+                "confidence": payload.get("confidence", 0.0)
+            }).execute()
         logger.debug(
             "Classification written to database",
             correlation_id=correlation_id,
@@ -450,18 +450,18 @@ async def process_info_request(payload: dict) -> None:
     # Write to classifications table for audit
     try:
         with log_timing("write_classification", logger=logger, correlation_id=correlation_id):
-            from src.services.supabase_client import SupabaseClient
-            async with SupabaseClient() as client:
-                client.table("classifications").insert({
-                    "event_id": "",
-                    "user_id": "",
-                    "channel_id": "",
-                    "message_ts": "",
-                    "message": "",
-                    "classification": payload,
-                    "message_type": "INFO_REQUEST",
-                    "confidence": payload.get("confidence", 0.0)
-                }).execute()
+        from src.services.supabase_client import SupabaseClient
+        async with SupabaseClient() as client:
+            client.table("classifications").insert({
+                "event_id": "",
+                "user_id": "",
+                "channel_id": "",
+                "message_ts": "",
+                "message": "",
+                "classification": payload,
+                "message_type": "INFO_REQUEST",
+                "confidence": payload.get("confidence", 0.0)
+            }).execute()
         logger.debug(
             "INFO_REQUEST classification written to database",
             correlation_id=correlation_id
@@ -491,7 +491,7 @@ async def poll_and_ingest_once(max_messages: int = 5) -> int:
     try:
         # Get batch of unprocessed messages
         with log_timing("get_intake_queue_batch", logger=logger, correlation_id=correlation_id):
-            batch = await get_intake_queue_batch(max_messages)
+        batch = await get_intake_queue_batch(max_messages)
         
         if not batch:
             logger.debug(
@@ -550,13 +550,13 @@ async def poll_and_ingest_once(max_messages: int = 5) -> int:
                     queue_id=str(queue_id),
                     message_type=message_type
                 ):
-                    if message_type == "GROUP":
-                        await process_group_message(payload, envelope)
-                    elif message_type == "STRAY":
-                        await process_stray_message(payload, envelope)
-                    elif message_type == "INFO_REQUEST":
-                        await process_info_request(payload)
-                    else:
+                if message_type == "GROUP":
+                    await process_group_message(payload, envelope)
+                elif message_type == "STRAY":
+                    await process_stray_message(payload, envelope)
+                elif message_type == "INFO_REQUEST":
+                    await process_info_request(payload)
+                else:
                         logger.warning(
                             "Unknown message type",
                             correlation_id=correlation_id,

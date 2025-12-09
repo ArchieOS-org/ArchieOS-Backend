@@ -149,7 +149,7 @@ class DebounceBuffer:
                         event_index=idx + 1,
                         total_events=messages_count
                     ):
-                        await self._process_event(event)
+                    await self._process_event(event)
                         processed_count += 1
                 except Exception as e:
                     failed_count += 1
@@ -171,7 +171,7 @@ class DebounceBuffer:
                 processed_successfully=processed_count,
                 processed_failed=failed_count,
                 debounce_window_seconds=self.window_seconds
-            )
+                    )
     
     async def _process_event(self, body: dict) -> None:
         """Process a single event (classify and enqueue)."""
@@ -237,14 +237,14 @@ class DebounceBuffer:
                 channel_id=channel_id,
                 slack_user_id=mask_user_id(slack_user_id)
             ):
-                await classify_and_enqueue_slack_message(
-                    text=text,
-                    slack_user_id=slack_user_id,
-                    channel_id=channel_id,
-                    ts=ts,
-                    links=links,
-                    attachments=attachments
-                )
+            await classify_and_enqueue_slack_message(
+                text=text,
+                slack_user_id=slack_user_id,
+                channel_id=channel_id,
+                ts=ts,
+                links=links,
+                attachments=attachments
+            )
                 logger.debug(
                     "Event processed successfully",
                     correlation_id=correlation_id,
