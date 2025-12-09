@@ -18,9 +18,10 @@ def get_supabase_client() -> Client:
     global _client
     
     if _client is None:
-        url = os.environ.get("SUPABASE_URL")
-        key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-        
+        # Strip to remove any trailing newlines from env vars (common Vercel issue)
+        url = os.environ.get("SUPABASE_URL", "").strip()
+        key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+
         if not url or not key:
             raise SupabaseError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set")
         
